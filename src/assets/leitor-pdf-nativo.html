@@ -744,6 +744,30 @@ window.onNativePicked = async function(items){
   else showToast('Não foi possível adicionar o PDF');
 };
 
+/* Chamado pelo Java (MainActivity.dispatchOpenExternalPdf) quando o app é
+   aberto via ACTION_VIEW/ACTION_SEND — ou seja, o usuário tocou num PDF
+   dentro do WhatsApp/Telegram/gerenciador de arquivos (OTG) e escolheu
+   "Leitor PDF", ou compartilhou o PDF direto pro app. Diferente do
+   onNativePicked (que só adiciona à biblioteca), aqui o PDF já abre
+   direto no leitor, como um app de PDF "de verdade" faria. */
+window.onNativeOpenExternal = async function(item){
+  if(!item || !window.AndroidPDF || typeof window.AndroidPDF.readPdfBytes !== 'function'){
+    showToast('Não foi possível abrir o PDF');
+    return;
+  }
+  try{
+    const b64 = window.AndroidPDF.readPdfBytes(item.uri);
+    if(!b64){ showToast('Não foi possível abrir o PDF'); return; }
+    const blob = base64ToBlob(b64, 'application/pdf');
+    const file = new File([blob], item.name || 'arquivo.pdf', {type:'application/pdf'});
+    await addFilesToLibrary([file]);
+    loadFile(file);
+  }catch(e){
+    console.error('falha ao abrir pdf externo', e);
+    showToast('Não foi possível abrir o PDF');
+  }
+};
+
 ['dragover','dragenter'].forEach(evt=> window.addEventListener(evt, (e)=>{ e.preventDefault(); }));
 window.addEventListener('drop', (e)=>{
   e.preventDefault();

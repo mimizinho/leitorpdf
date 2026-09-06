@@ -25,6 +25,11 @@ public class MainActivity extends Activity {
     static final int REQ_PICK_FOLDER = 4001;
     private WebView webView;
     private ValueCallback<Uri[]> filePathCallback;
+    // Uri recebida via ACTION_VIEW/ACTION_SEND (abrir PDF vindo do WhatsApp,
+    // Telegram, gerenciador de arquivos/OTG etc.) enquanto a página do
+    // WebView ainda não terminou de carregar. É disparada pro JS assim que
+    // onPageFinished roda (ver dispatchOpenExternalPdf).
+    private Uri pendingViewUri;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -37,7 +42,17 @@ public class MainActivity extends Activity {
         settings.setDomStorageEnabled(true);
         settings.setAllowFileAccess(true);
 
-        webView.setWebViewClient(new WebViewClient());
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                if (pendingViewUri != null) {
+                    Uri uri = pendingViewUri;
+                    pendingViewUri = null;
+                    dispatchOpenExternalPdf(uri);
+                }
+            }
+        });
         // sem isso, o <input type="file"> do HTML (botão "Adicionar PDF")
         // não abre o seletor de arquivos do Android — fica sem fazer nada.
         webView.setWebChromeClient(new WebChromeClient() {
@@ -69,7 +84,88 @@ public class MainActivity extends Activity {
         webView.addJavascriptInterface(new MediaPdfBridge(this), "AndroidPDF");
         webView.loadUrl("file:///android_asset/leitor-pdf-nativo.html");
 
+        // se o app foi aberto por um "Abrir com" / "Compartilhar" do
+        // WhatsApp, Telegram, gerenciador de arquivos (OTG) etc., guarda a
+        // Uri pra abrir assim que a página terminar de carregar.
+        handleViewIntent(getIntent());
+
         requestStoragePermissionIfNeeded();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        // aqui a Activity já estava rodando (singleTask), então a página já
+        // carregou — pode processar e disparar pro JS na hora.
+        handleViewIntent(intent);
+        if (pendingViewUri != null && webView != null) {
+            Uri uri = pendingViewUri;
+            pendingViewUri = null;
+            dispatchOpenExternalPdf(uri);
+        }
+    }
+
+    /**
+     * Extrai a Uri de um PDF recebido via ACTION_VIEW (ex.: tocar num PDF
+     * dentro do WhatsApp/Telegram/gerenciador de arquivos e escolher "Leitor
+     * PDF") ou ACTION_SEND (compartilhar um PDF direto pro app). Guarda em
+     * pendingViewUri; quem dispara de fato pro JS é dispatchOpenExternalPdf.
+     */
+    private void handleViewIntent(Intent intent) {
+        if (intent == null) return;
+        String action = intent.getAction();
+        Uri uri = null;
+        if (Intent.ACTION_VIEW.equals(action)) {
+            uri = intent.getData();
+        } else if (Intent.ACTION_SEND.equals(action)) {
+            uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+        }
+        if (uri == null) return;
+        try {
+            getContentResolver().takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Exception ignored) {
+            // provedores como o do WhatsApp/Telegram costumam só conceder
+            // permissão temporária pra essa chamada específica (não
+            // persistente) — sem problema, a leitura imediata funciona
+            // do mesmo jeito.
+        }
+        pendingViewUri = uri;
+    }
+
+    /**
+     * Manda a Uri recebida de fora pro JS (window.onNativeOpenExternal),
+     * reaproveitando o mesmo formato {uri,name,size} usado pelo seletor
+     * nativo (ver handleNativePickResult).
+     */
+    private void dispatchOpenExternalPdf(Uri uri) {
+        String name = uri.getLastPathSegment();
+        long size = 0;
+        try (android.database.Cursor cursor = getContentResolver().query(
+                uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int nameIdx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                int sizeIdx = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE);
+                if (nameIdx >= 0) name = cursor.getString(nameIdx);
+                if (sizeIdx >= 0) size = cursor.getLong(sizeIdx);
+            }
+        } catch (Exception ignored) {}
+
+        final org.json.JSONObject obj = new org.json.JSONObject();
+        try {
+            obj.put("uri", uri.toString());
+            obj.put("name", name != null ? name : "arquivo.pdf");
+            obj.put("size", size);
+        } catch (Exception ignored) {}
+
+        final String js = "window.onNativeOpenExternal && window.onNativeOpenExternal(" + obj.toString() + ");";
+        webView.post(new Runnable() {
+            @Override
+            public void run() {
+                webView.evaluateJavascript(js, null);
+            }
+        });
     }
 
     @Override

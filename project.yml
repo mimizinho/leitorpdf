@@ -1,0 +1,23 @@
+name: leitorpdf
+build-path: .build
+libs-path: .libs
+cache-path: .cache
+
+dependencies: []
+
+android:
+  target-sdk: 34
+  min-sdk: 23
+  version-code: 1
+  version-name: "1.0.0"
+
+  manifest-path: AndroidManifest.xml
+  sources-path: src/java
+  res-path: src/res
+  assets-path: src/assets
+
+  build-type: debug
+  java-version: 17
+  view-binding: false
+  compose: false
+  r8: false
